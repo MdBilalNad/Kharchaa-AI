@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import {
@@ -21,6 +20,7 @@ import {
   Cell,
   Tooltip,
 } from 'recharts'
+import { createBudgetPlan } from './budgetEngine'
 
 type Expense = {
   id: string
@@ -69,7 +69,7 @@ const money = (amount: number) =>
     maximumFractionDigits: 2,
   }).format(amount)
 
-const todayString = () => {
+function todayString() {
   const date = new Date()
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -96,14 +96,13 @@ function readStorage<T>(
 function isBudget(value: unknown): value is Budget {
   if (!value || typeof value !== 'object') return false
 
-  const budget = value as Record<string, unknown>
-  return (
-    ['allowance', 'hostel', 'mess', 'otherFixed'].every(
-      (key) =>
-        typeof budget[key] === 'number' &&
-        Number.isFinite(budget[key]) &&
-        (budget[key] as number) >= 0,
-    )
+  const item = value as Record<string, unknown>
+
+  return ['allowance', 'hostel', 'mess', 'otherFixed'].every(
+    (key) =>
+      typeof item[key] === 'number' &&
+      Number.isFinite(item[key]) &&
+      (item[key] as number) >= 0,
   )
 }
 
@@ -143,25 +142,22 @@ function App() {
   const [showForm, setShowForm] = useState(false)
   const [activePage, setActivePage] = useState<Page>('Overview')
   const [formError, setFormError] = useState('')
-  
 
-  
-useEffect(() => {
-  try {
-    localStorage.setItem('kharchaa-budget', JSON.stringify(budget))
-  } catch (error) {
-    console.error('Could not save Kharchaa budget:', error)
-  }
-}, [budget])
+  useEffect(() => {
+    try {
+      localStorage.setItem('kharchaa-budget', JSON.stringify(budget))
+    } catch (error) {
+      console.error('Could not save Kharchaa budget:', error)
+    }
+  }, [budget])
 
-useEffect(() => {
-  try {
-    localStorage.setItem('kharchaa-expenses', JSON.stringify(expenses))
-  } catch (error) {
-    console.error('Could not save Kharchaa expenses:', error)
-  }
-}, [expenses])
-
+  useEffect(() => {
+    try {
+      localStorage.setItem('kharchaa-expenses', JSON.stringify(expenses))
+    } catch (error) {
+      console.error('Could not save Kharchaa expenses:', error)
+    }
+  }, [expenses])
 
   const fixedExpenses =
     budget.hostel + budget.mess + budget.otherFixed
@@ -174,20 +170,35 @@ useEffect(() => {
   const remaining = budget.allowance - fixedExpenses - spent
 
   const today = todayString()
+
   const todaySpent = expenses
     .filter((expense) => expense.date === today)
     .reduce((sum, expense) => sum + expense.amount, 0)
 
+  const now = new Date()
+
   const daysLeft = Math.max(
     1,
-    new Date(
-      new Date().getFullYear(),
-      new Date().getMonth() + 1,
-      0,
-    ).getDate() - new Date().getDate() + 1,
+    new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() -
+      now.getDate() +
+      1,
   )
 
-  const dailyLimit = Math.max(0, remaining / daysLeft)
+  
+
+  // Do not allocate money that has already been spent.
+  const availableAfterExpenses = Math.max(0, remaining)
+
+  const savings = availableAfterExpenses * 0.2
+  const emergencyFund = availableAfterExpenses * 0.1
+  const miscellaneous = availableAfterExpenses * 0.1
+
+  const dailySpending = Math.max(
+    0,
+    availableAfterExpenses - savings - emergencyFund - miscellaneous,
+  )
+
+  const dailyLimit = dailySpending / daysLeft
   const todayRemaining = Math.max(0, dailyLimit - todaySpent)
 
   const chartData = useMemo(
@@ -207,11 +218,11 @@ useEffect(() => {
     () =>
       expenses.filter((expense) => {
         const expenseDate = new Date(`${expense.date}T12:00:00`)
-        const now = new Date()
+        const currentDate = new Date()
 
         return (
-          expenseDate.getFullYear() === now.getFullYear() &&
-          expenseDate.getMonth() === now.getMonth()
+          expenseDate.getFullYear() === currentDate.getFullYear() &&
+          expenseDate.getMonth() === currentDate.getMonth()
         )
       }),
     [expenses],
@@ -239,10 +250,7 @@ useEffect(() => {
       return
     }
 
-    if (
-      !Number.isFinite(parsedAmount) ||
-      parsedAmount <= 0
-    ) {
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
       setFormError('Enter an amount greater than zero.')
       return
     }
@@ -289,9 +297,7 @@ useEffect(() => {
   ]
 
   const visibleExpenses =
-    activePage === 'Insights'
-      ? monthlyExpenses
-      : expenses
+    activePage === 'Insights' ? monthlyExpenses : expenses
 
   return (
     <div className="min-h-screen bg-[#f6f8f5] md:flex">
@@ -336,16 +342,10 @@ useEffect(() => {
         </nav>
 
         <div className="mt-8 rounded-xl border border-[#e3e9e2] bg-[#f7faf6] p-4 md:mt-auto">
-          <PiggyBank
-            className="mb-3 text-[#247653]"
-            size={22}
-          />
-          <p className="text-sm font-semibold">
-            Small steps add up.
-          </p>
+          <PiggyBank className="mb-3 text-[#247653]" size={22} />
+          <p className="text-sm font-semibold">Small steps add up.</p>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            Track your spending today to make better decisions
-            tomorrow.
+            Track your spending today to make better decisions tomorrow.
           </p>
         </div>
       </aside>
@@ -378,13 +378,10 @@ useEffect(() => {
           </button>
         </header>
 
-        
-
         {remaining < 0 && (
           <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-            Your fixed costs and recorded expenses exceed your
-            allowance by {money(-remaining)}. Consider adjusting
-            your budget.
+            Your fixed costs and recorded expenses exceed your allowance by{' '}
+            {money(-remaining)}. Consider adjusting your budget.
           </div>
         )}
 
@@ -393,17 +390,15 @@ useEffect(() => {
             onSubmit={addExpense}
             className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5"
           >
-            <h3 className="mb-4 font-semibold">
-              Record an expense
-            </h3>
+            <h3 className="mb-4 font-semibold">Record an expense</h3>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <input
                 required
+                maxLength={100}
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="Expense name"
-                maxLength={100}
                 className="min-w-0 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#247653]"
               />
 
@@ -469,9 +464,7 @@ useEffect(() => {
 
         {activePage === 'Settings' && (
           <section className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5">
-            <h3 className="mb-4 font-semibold">
-              Monthly budget settings
-            </h3>
+            <h3 className="mb-4 font-semibold">Monthly budget settings</h3>
             <p className="mb-4 text-sm text-gray-500">
               Update your allowance and fixed monthly costs.
             </p>
@@ -483,10 +476,7 @@ useEffect(() => {
                 ['mess', 'Mess fees'],
                 ['otherFixed', 'Other fixed costs'],
               ] as const).map(([field, label]) => (
-                <label
-                  key={field}
-                  className="text-sm text-gray-600"
-                >
+                <label key={field} className="text-sm text-gray-600">
                   {label}
                   <input
                     type="number"
@@ -508,8 +498,8 @@ useEffect(() => {
           <section className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5">
             <h3 className="font-semibold">Monthly insights</h3>
             <p className="mt-2 text-sm text-gray-500">
-              You have recorded {monthlyExpenses.length} expenses
-              this month, totalling{' '}
+              You have recorded {monthlyExpenses.length} expenses this month,
+              totalling{' '}
               {money(
                 monthlyExpenses.reduce(
                   (sum, expense) => sum + expense.amount,
@@ -518,8 +508,7 @@ useEffect(() => {
               )}.
             </p>
             <p className="mt-2 text-sm text-gray-500">
-              These figures are based on expenses you have
-              manually entered.
+              These figures are based on expenses you have manually entered.
             </p>
           </section>
         )}
@@ -555,6 +544,53 @@ useEffect(() => {
           />
         </section>
 
+        <section className="mt-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-semibold">Your money plan</h3>
+            <p className="mt-1 text-sm text-gray-500">
+              Suggested allocations based on your remaining budget.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                label: 'Daily spending',
+                value: dailySpending,
+                description: `${money(dailyLimit)} per day`,
+              },
+              {
+                label: 'Savings',
+                value: savings,
+                description: '20% of remaining funds',
+              },
+              {
+                label: 'Emergency fund',
+                value: emergencyFund,
+                description: '10% of remaining funds',
+              },
+              {
+                label: 'Miscellaneous',
+                value: miscellaneous,
+                description: '10% of remaining funds',
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="rounded-xl border border-[#e3e9e2] bg-white p-5"
+              >
+                <p className="text-sm text-gray-500">{item.label}</p>
+                <p className="mt-3 text-2xl font-bold">
+                  {money(item.value)}
+                </p>
+                <p className="mt-2 text-xs text-gray-400">
+                  {item.description}
+                </p>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <section className="mt-6 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <div className="rounded-xl border border-[#e3e9e2] bg-white p-5 md:p-6">
             <div className="mb-5 flex items-start justify-between gap-3">
@@ -581,8 +617,7 @@ useEffect(() => {
               <span className="font-semibold">
                 {budget.allowance > 0
                   ? Math.round(
-                      ((fixedExpenses + spent) / budget.allowance) *
-                        100,
+                      ((fixedExpenses + spent) / budget.allowance) * 100,
                     )
                   : 0}
                 %
@@ -599,9 +634,7 @@ useEffect(() => {
                     budget.allowance > 0
                       ? Math.min(
                           100,
-                          ((fixedExpenses + spent) /
-                            budget.allowance) *
-                            100,
+                          ((fixedExpenses + spent) / budget.allowance) * 100,
                         )
                       : 0
                   }%`,
@@ -666,9 +699,7 @@ useEffect(() => {
                           <Cell
                             key={item.name}
                             fill={
-                              chartColors[
-                                categories.indexOf(item.name)
-                              ]
+                              chartColors[categories.indexOf(item.name)]
                             }
                           />
                         ))}
@@ -691,9 +722,7 @@ useEffect(() => {
                           className="h-2.5 w-2.5 rounded-full"
                           style={{
                             background:
-                              chartColors[
-                                categories.indexOf(item.name)
-                              ],
+                              chartColors[categories.indexOf(item.name)],
                           }}
                         />
                         {item.name}
@@ -733,9 +762,7 @@ useEffect(() => {
                 size={28}
                 className="mx-auto mb-3 text-gray-300"
               />
-              <p className="text-sm font-medium">
-                No expenses yet
-              </p>
+              <p className="text-sm font-medium">No expenses yet</p>
               <p className="mt-1 text-sm text-gray-500">
                 Record your first purchase to start tracking your money.
               </p>
@@ -757,29 +784,22 @@ useEffect(() => {
                     <th className="pb-3 font-medium">Expense</th>
                     <th className="pb-3 font-medium">Category</th>
                     <th className="pb-3 font-medium">Date</th>
-                    <th className="pb-3 text-right font-medium">
-                      Amount
-                    </th>
-                    <th className="pb-3 text-right font-medium">
-                      Remove
-                    </th>
+                    <th className="pb-3 text-right font-medium">Amount</th>
+                    <th className="pb-3 text-right font-medium">Remove</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {visibleExpenses.map((expense) => (
                     <tr
                       key={expense.id}
                       className="border-b border-gray-50 last:border-0"
                     >
-                      <td className="py-4 font-medium">
-                        {expense.title}
-                      </td>
+                      <td className="py-4 font-medium">{expense.title}</td>
                       <td className="py-4 text-gray-500">
                         {expense.category}
                       </td>
-                      <td className="py-4 text-gray-500">
-                        {expense.date}
-                      </td>
+                      <td className="py-4 text-gray-500">{expense.date}</td>
                       <td className="py-4 text-right font-semibold">
                         {money(expense.amount)}
                       </td>
@@ -838,9 +858,7 @@ function Metric({
           {label}
         </p>
         <span
-          className={
-            highlight ? 'text-[#b9dfc5]' : 'text-[#247653]'
-          }
+          className={highlight ? 'text-[#b9dfc5]' : 'text-[#247653]'}
         >
           {icon}
         </span>
