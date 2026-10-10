@@ -1,5 +1,6 @@
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import {
   Wallet,
   LayoutDashboard,
@@ -11,6 +12,7 @@ import {
   PiggyBank,
   CalendarDays,
   Trash2,
+  X,
 } from 'lucide-react'
 import {
   ResponsiveContainer,
@@ -21,84 +23,243 @@ import {
 } from 'recharts'
 
 type Expense = {
-  id: number
+  id: string
   title: string
   category: string
   amount: number
   date: string
 }
 
-const initialBudget = {
+type Budget = {
+  allowance: number
+  hostel: number
+  mess: number
+  otherFixed: number
+}
+
+type Page = 'Overview' | 'Expenses' | 'Insights' | 'Settings'
+
+const initialBudget: Budget = {
   allowance: 10000,
   hostel: 3000,
   mess: 2500,
   otherFixed: 500,
 }
 
-const categories = ['Food', 'Transport', 'Shopping', 'Education', 'Other']
-const chartColors = ['#247653', '#E6A23C', '#5984C5', '#9675B5', '#A3ACA5']
+const categories = [
+  'Food',
+  'Transport',
+  'Shopping',
+  'Education',
+  'Other',
+]
+
+const chartColors = [
+  '#247653',
+  '#E6A23C',
+  '#5984C5',
+  '#9675B5',
+  '#A3ACA5',
+]
 
 const money = (amount: number) =>
   new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(amount)
 
+const todayString = () => {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function readStorage<T>(
+  key: string,
+  fallback: T,
+  validate: (value: unknown) => value is T,
+): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+
+    const parsed: unknown = JSON.parse(raw)
+    return validate(parsed) ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function isBudget(value: unknown): value is Budget {
+  if (!value || typeof value !== 'object') return false
+
+  const budget = value as Record<string, unknown>
+  return (
+    ['allowance', 'hostel', 'mess', 'otherFixed'].every(
+      (key) =>
+        typeof budget[key] === 'number' &&
+        Number.isFinite(budget[key]) &&
+        (budget[key] as number) >= 0,
+    )
+  )
+}
+
+function isExpenseArray(value: unknown): value is Expense[] {
+  if (!Array.isArray(value)) return false
+
+  return value.every(
+    (item) =>
+      item &&
+      typeof item === 'object' &&
+      typeof item.id === 'string' &&
+      typeof item.title === 'string' &&
+      item.title.trim().length > 0 &&
+      typeof item.category === 'string' &&
+      categories.includes(item.category) &&
+      typeof item.amount === 'number' &&
+      Number.isFinite(item.amount) &&
+      item.amount > 0 &&
+      typeof item.date === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(item.date),
+  )
+}
+
 function App() {
-  const [budget, setBudget] = useState(initialBudget)
-  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [budget, setBudget] = useState<Budget>(() =>
+    readStorage('kharchaa-budget', initialBudget, isBudget),
+  )
+
+  const [expenses, setExpenses] = useState<Expense[]>(() =>
+    readStorage('kharchaa-expenses', [], isExpenseArray),
+  )
+
   const [title, setTitle] = useState('')
   const [amount, setAmount] = useState('')
   const [category, setCategory] = useState('Food')
-  const [date, setDate] = useState(new Date().toLocaleDateString('en-CA'))
+  const [date, setDate] = useState(todayString())
   const [showForm, setShowForm] = useState(false)
-  const [activePage, setActivePage] = useState('Overview')
+  const [activePage, setActivePage] = useState<Page>('Overview')
+  const [formError, setFormError] = useState('')
+  
 
-  const fixedExpenses = budget.hostel + budget.mess + budget.otherFixed
-  const spent = expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  
+useEffect(() => {
+  try {
+    localStorage.setItem('kharchaa-budget', JSON.stringify(budget))
+  } catch (error) {
+    console.error('Could not save Kharchaa budget:', error)
+  }
+}, [budget])
+
+useEffect(() => {
+  try {
+    localStorage.setItem('kharchaa-expenses', JSON.stringify(expenses))
+  } catch (error) {
+    console.error('Could not save Kharchaa expenses:', error)
+  }
+}, [expenses])
+
+
+  const fixedExpenses =
+    budget.hostel + budget.mess + budget.otherFixed
+
+  const spent = expenses.reduce(
+    (sum, expense) => sum + expense.amount,
+    0,
+  )
+
   const remaining = budget.allowance - fixedExpenses - spent
+
+  const today = todayString()
+  const todaySpent = expenses
+    .filter((expense) => expense.date === today)
+    .reduce((sum, expense) => sum + expense.amount, 0)
 
   const daysLeft = Math.max(
     1,
-    new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()
-      - new Date().getDate() + 1,
+    new Date(
+      new Date().getFullYear(),
+      new Date().getMonth() + 1,
+      0,
+    ).getDate() - new Date().getDate() + 1,
   )
 
   const dailyLimit = Math.max(0, remaining / daysLeft)
+  const todayRemaining = Math.max(0, dailyLimit - todaySpent)
 
-  const chartData = useMemo(() => {
-    return categories
-      .map((name) => ({
-        name,
-        value: expenses
-          .filter((expense) => expense.category === name)
-          .reduce((sum, expense) => sum + expense.amount, 0),
-      }))
-      .filter((item) => item.value > 0)
-  }, [expenses])
+  const chartData = useMemo(
+    () =>
+      categories
+        .map((name) => ({
+          name,
+          value: expenses
+            .filter((expense) => expense.category === name)
+            .reduce((sum, expense) => sum + expense.amount, 0),
+        }))
+        .filter((item) => item.value > 0),
+    [expenses],
+  )
 
-  function updateBudget(
-    field: keyof typeof initialBudget,
-    value: string,
-  ) {
+  const monthlyExpenses = useMemo(
+    () =>
+      expenses.filter((expense) => {
+        const expenseDate = new Date(`${expense.date}T12:00:00`)
+        const now = new Date()
+
+        return (
+          expenseDate.getFullYear() === now.getFullYear() &&
+          expenseDate.getMonth() === now.getMonth()
+        )
+      }),
+    [expenses],
+  )
+
+  function updateBudget(field: keyof Budget, value: string) {
+    const parsed = Number(value)
+
+    if (!Number.isFinite(parsed) || parsed < 0) return
+
     setBudget((current) => ({
       ...current,
-      [field]: Math.max(0, Number(value) || 0),
+      [field]: parsed,
     }))
   }
 
-  function addExpense(event: React.FormEvent<HTMLFormElement>) {
+  function addExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setFormError('')
 
     const parsedAmount = Number(amount)
-    if (!title.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+
+    if (!title.trim()) {
+      setFormError('Enter an expense name.')
+      return
+    }
+
+    if (
+      !Number.isFinite(parsedAmount) ||
+      parsedAmount <= 0
+    ) {
+      setFormError('Enter an amount greater than zero.')
+      return
+    }
+
+    if (!categories.includes(category)) {
+      setFormError('Select a valid category.')
+      return
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setFormError('Select a valid date.')
       return
     }
 
     setExpenses((current) => [
       {
-        id: Date.now(),
+        id: crypto.randomUUID(),
         title: title.trim(),
         category,
         amount: parsedAmount,
@@ -109,30 +270,43 @@ function App() {
 
     setTitle('')
     setAmount('')
+    setCategory('Food')
+    setDate(todayString())
     setShowForm(false)
   }
 
-  function removeExpense(id: number) {
-    setExpenses((current) => current.filter((expense) => expense.id !== id))
+  function removeExpense(id: string) {
+    setExpenses((current) =>
+      current.filter((expense) => expense.id !== id),
+    )
   }
 
   const navigation = [
-    { label: 'Overview', icon: LayoutDashboard },
-    { label: 'Expenses', icon: ReceiptText },
-    { label: 'Insights', icon: ChartNoAxesCombined },
-    { label: 'Settings', icon: Settings },
+    { label: 'Overview' as const, icon: LayoutDashboard },
+    { label: 'Expenses' as const, icon: ReceiptText },
+    { label: 'Insights' as const, icon: ChartNoAxesCombined },
+    { label: 'Settings' as const, icon: Settings },
   ]
 
+  const visibleExpenses =
+    activePage === 'Insights'
+      ? monthlyExpenses
+      : expenses
+
   return (
-    <div className="min-h-screen md:flex">
+    <div className="min-h-screen bg-[#f6f8f5] md:flex">
       <aside className="flex w-full flex-col border-b border-[#e3e9e2] bg-white p-5 md:min-h-screen md:w-64 md:border-b-0 md:border-r">
         <div className="mb-8 flex items-center gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#153e2c] text-white">
             <Wallet size={21} />
           </div>
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Kharchaa</h1>
-            <p className="text-xs text-gray-500">Your money, in balance.</p>
+            <h1 className="text-xl font-bold tracking-tight">
+              Kharchaa
+            </h1>
+            <p className="text-xs text-gray-500">
+              Your money, in balance.
+            </p>
           </div>
         </div>
 
@@ -146,7 +320,8 @@ function App() {
               key={label}
               onClick={() => {
                 setActivePage(label)
-                if (label === 'Expenses') setShowForm(true)
+                setShowForm(false)
+                setFormError('')
               }}
               className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${
                 activePage === label
@@ -161,10 +336,16 @@ function App() {
         </nav>
 
         <div className="mt-8 rounded-xl border border-[#e3e9e2] bg-[#f7faf6] p-4 md:mt-auto">
-          <PiggyBank className="mb-3 text-[#247653]" size={22} />
-          <p className="text-sm font-semibold">Small steps add up.</p>
+          <PiggyBank
+            className="mb-3 text-[#247653]"
+            size={22}
+          />
+          <p className="text-sm font-semibold">
+            Small steps add up.
+          </p>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            Track your spending today to make better decisions tomorrow.
+            Track your spending today to make better decisions
+            tomorrow.
           </p>
         </div>
       </aside>
@@ -172,9 +353,13 @@ function App() {
       <main className="min-w-0 flex-1 p-5 md:p-8 lg:p-10">
         <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="mb-1 text-sm text-gray-500">Your student finances</p>
+            <p className="mb-1 text-sm text-gray-500">
+              Your student finances
+            </p>
             <h2 className="text-2xl font-bold tracking-tight md:text-3xl">
-              {activePage === 'Overview' ? 'Money overview' : activePage}
+              {activePage === 'Overview'
+                ? 'Money overview'
+                : activePage}
             </h2>
             <p className="mt-2 text-sm text-gray-500">
               A clear picture of where your money stands.
@@ -182,18 +367,24 @@ function App() {
           </div>
 
           <button
-            onClick={() => setShowForm((current) => !current)}
+            onClick={() => {
+              setShowForm((current) => !current)
+              setFormError('')
+            }}
             className="flex items-center gap-2 rounded-lg bg-[#1c6541] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#164e32]"
           >
-            <Plus size={17} />
-            Add expense
+            {showForm ? <X size={17} /> : <Plus size={17} />}
+            {showForm ? 'Close form' : 'Add expense'}
           </button>
         </header>
 
+        
+
         {remaining < 0 && (
           <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-            Your planned expenses exceed your allowance by {money(-remaining)}.
-            Consider adjusting your budget.
+            Your fixed costs and recorded expenses exceed your
+            allowance by {money(-remaining)}. Consider adjusting
+            your budget.
           </div>
         )}
 
@@ -202,15 +393,20 @@ function App() {
             onSubmit={addExpense}
             className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5"
           >
-            <h3 className="mb-4 font-semibold">Record an expense</h3>
+            <h3 className="mb-4 font-semibold">
+              Record an expense
+            </h3>
+
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <input
                 required
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="Expense name"
+                maxLength={100}
                 className="min-w-0 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#247653]"
               />
+
               <input
                 required
                 type="number"
@@ -221,15 +417,19 @@ function App() {
                 placeholder="Amount in ₹"
                 className="min-w-0 rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-[#247653]"
               />
+
               <select
                 value={category}
                 onChange={(event) => setCategory(event.target.value)}
                 className="min-w-0 rounded-lg border border-gray-200 px-3 py-2 text-sm"
               >
                 {categories.map((item) => (
-                  <option key={item}>{item}</option>
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
                 ))}
               </select>
+
               <input
                 required
                 type="date"
@@ -238,6 +438,13 @@ function App() {
                 className="min-w-0 rounded-lg border border-gray-200 px-3 py-2 text-sm"
               />
             </div>
+
+            {formError && (
+              <p role="alert" className="mt-3 text-sm text-red-600">
+                {formError}
+              </p>
+            )}
+
             <div className="mt-4 flex gap-2">
               <button
                 type="submit"
@@ -245,9 +452,13 @@ function App() {
               >
                 Save expense
               </button>
+
               <button
                 type="button"
-                onClick={() => setShowForm(false)}
+                onClick={() => {
+                  setShowForm(false)
+                  setFormError('')
+                }}
                 className="rounded-lg border border-gray-200 px-4 py-2 text-sm"
               >
                 Cancel
@@ -258,10 +469,13 @@ function App() {
 
         {activePage === 'Settings' && (
           <section className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5">
-            <h3 className="mb-4 font-semibold">Monthly budget settings</h3>
+            <h3 className="mb-4 font-semibold">
+              Monthly budget settings
+            </h3>
             <p className="mb-4 text-sm text-gray-500">
               Update your allowance and fixed monthly costs.
             </p>
+
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {([
                 ['allowance', 'Monthly allowance'],
@@ -269,18 +483,44 @@ function App() {
                 ['mess', 'Mess fees'],
                 ['otherFixed', 'Other fixed costs'],
               ] as const).map(([field, label]) => (
-                <label key={field} className="text-sm text-gray-600">
+                <label
+                  key={field}
+                  className="text-sm text-gray-600"
+                >
                   {label}
                   <input
                     type="number"
                     min="0"
+                    step="0.01"
                     value={budget[field]}
-                    onChange={(event) => updateBudget(field, event.target.value)}
+                    onChange={(event) =>
+                      updateBudget(field, event.target.value)
+                    }
                     className="mt-2 block w-full rounded-lg border border-gray-200 px-3 py-2 text-gray-900"
                   />
                 </label>
               ))}
             </div>
+          </section>
+        )}
+
+        {activePage === 'Insights' && (
+          <section className="mb-6 rounded-xl border border-[#e3e9e2] bg-white p-5">
+            <h3 className="font-semibold">Monthly insights</h3>
+            <p className="mt-2 text-sm text-gray-500">
+              You have recorded {monthlyExpenses.length} expenses
+              this month, totalling{' '}
+              {money(
+                monthlyExpenses.reduce(
+                  (sum, expense) => sum + expense.amount,
+                  0,
+                ),
+              )}.
+            </p>
+            <p className="mt-2 text-sm text-gray-500">
+              These figures are based on expenses you have
+              manually entered.
+            </p>
           </section>
         )}
 
@@ -292,23 +532,26 @@ function App() {
             icon={<Wallet size={19} />}
             highlight
           />
+
           <Metric
             label="Daily spending limit"
             value={money(dailyLimit)}
             note={`${daysLeft} days remaining this month`}
             icon={<CalendarDays size={19} />}
           />
+
           <Metric
-            label="Monthly allowance"
-            value={money(budget.allowance)}
-            note="Your planned monthly income"
-            icon={<PiggyBank size={19} />}
+            label="Today's limit remaining"
+            value={money(todayRemaining)}
+            note={`${money(todaySpent)} spent today`}
+            icon={<ArrowDownRight size={19} />}
           />
+
           <Metric
             label="Total spent"
             value={money(fixedExpenses + spent)}
             note={`${money(spent)} in logged expenses`}
-            icon={<ArrowDownRight size={19} />}
+            icon={<PiggyBank size={19} />}
           />
         </section>
 
@@ -321,6 +564,7 @@ function App() {
                   Your allowance, allocated at a glance.
                 </p>
               </div>
+
               <button
                 onClick={() => {
                   setActivePage('Settings')
@@ -336,19 +580,31 @@ function App() {
               <span className="text-gray-500">Budget used</span>
               <span className="font-semibold">
                 {budget.allowance > 0
-                  ? Math.round(((fixedExpenses + spent) / budget.allowance) * 100)
-                  : 0}%
+                  ? Math.round(
+                      ((fixedExpenses + spent) / budget.allowance) *
+                        100,
+                    )
+                  : 0}
+                %
               </span>
             </div>
+
             <div className="h-3 overflow-hidden rounded-full bg-gray-100">
               <div
                 className={`h-full rounded-full ${
                   remaining < 0 ? 'bg-red-500' : 'bg-[#247653]'
                 }`}
                 style={{
-                  width: `${budget.allowance > 0
-                    ? Math.min(100, ((fixedExpenses + spent) / budget.allowance) * 100)
-                    : 0}%`,
+                  width: `${
+                    budget.allowance > 0
+                      ? Math.min(
+                          100,
+                          ((fixedExpenses + spent) /
+                            budget.allowance) *
+                            100,
+                        )
+                      : 0
+                  }%`,
                 }}
               />
             </div>
@@ -361,9 +617,14 @@ function App() {
                 ['Logged expenses', spent],
                 ['Remaining balance', remaining],
               ].map(([label, value]) => (
-                <div key={label} className="flex justify-between gap-3 py-3 text-sm">
+                <div
+                  key={label}
+                  className="flex justify-between gap-3 py-3 text-sm"
+                >
                   <span className="text-gray-600">{label}</span>
-                  <span className="font-medium">{money(Number(value))}</span>
+                  <span className="font-medium">
+                    {money(Number(value))}
+                  </span>
                 </div>
               ))}
             </div>
@@ -377,7 +638,10 @@ function App() {
 
             {chartData.length === 0 ? (
               <div className="flex min-h-52 flex-col items-center justify-center text-center">
-                <ChartNoAxesCombined size={30} className="mb-3 text-gray-300" />
+                <ChartNoAxesCombined
+                  size={30}
+                  className="mb-3 text-gray-300"
+                />
                 <p className="text-sm font-medium text-gray-600">
                   Your chart starts with your first expense.
                 </p>
@@ -401,25 +665,42 @@ function App() {
                         {chartData.map((item) => (
                           <Cell
                             key={item.name}
-                            fill={chartColors[categories.indexOf(item.name)]}
+                            fill={
+                              chartColors[
+                                categories.indexOf(item.name)
+                              ]
+                            }
                           />
                         ))}
                       </Pie>
-                      <Tooltip formatter={(value) => money(Number(value))} />
+                      <Tooltip
+                        formatter={(value) => money(Number(value))}
+                      />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
+
                 <div className="space-y-3">
                   {chartData.map((item) => (
-                    <div key={item.name} className="flex items-center justify-between text-sm">
+                    <div
+                      key={item.name}
+                      className="flex items-center justify-between text-sm"
+                    >
                       <span className="flex items-center gap-2 text-gray-600">
                         <span
                           className="h-2.5 w-2.5 rounded-full"
-                          style={{ background: chartColors[categories.indexOf(item.name)] }}
+                          style={{
+                            background:
+                              chartColors[
+                                categories.indexOf(item.name)
+                              ],
+                          }}
                         />
                         {item.name}
                       </span>
-                      <span className="font-medium">{money(item.value)}</span>
+                      <span className="font-medium">
+                        {money(item.value)}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -431,25 +712,38 @@ function App() {
         <section className="mt-6 rounded-xl border border-[#e3e9e2] bg-white p-5 md:p-6">
           <div className="mb-5 flex items-center justify-between gap-3">
             <div>
-              <h3 className="font-semibold">Recent expenses</h3>
+              <h3 className="font-semibold">
+                {activePage === 'Insights'
+                  ? 'This month’s expenses'
+                  : 'Recent expenses'}
+              </h3>
               <p className="mt-1 text-sm text-gray-500">
-                Your latest recorded transactions.
+                Your recorded transactions.
               </p>
             </div>
+
             <span className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">
-              {expenses.length} records
+              {visibleExpenses.length} records
             </span>
           </div>
 
-          {expenses.length === 0 ? (
+          {visibleExpenses.length === 0 ? (
             <div className="rounded-lg border border-dashed border-gray-200 py-10 text-center">
-              <ReceiptText size={28} className="mx-auto mb-3 text-gray-300" />
-              <p className="text-sm font-medium">No expenses yet</p>
+              <ReceiptText
+                size={28}
+                className="mx-auto mb-3 text-gray-300"
+              />
+              <p className="text-sm font-medium">
+                No expenses yet
+              </p>
               <p className="mt-1 text-sm text-gray-500">
                 Record your first purchase to start tracking your money.
               </p>
               <button
-                onClick={() => setShowForm(true)}
+                onClick={() => {
+                  setShowForm(true)
+                  setActivePage('Overview')
+                }}
                 className="mt-4 text-sm font-semibold text-[#247653] hover:underline"
               >
                 Add your first expense
@@ -463,16 +757,29 @@ function App() {
                     <th className="pb-3 font-medium">Expense</th>
                     <th className="pb-3 font-medium">Category</th>
                     <th className="pb-3 font-medium">Date</th>
-                    <th className="pb-3 text-right font-medium">Amount</th>
-                    <th className="pb-3 text-right font-medium">Remove</th>
+                    <th className="pb-3 text-right font-medium">
+                      Amount
+                    </th>
+                    <th className="pb-3 text-right font-medium">
+                      Remove
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {expenses.map((expense) => (
-                    <tr key={expense.id} className="border-b border-gray-50 last:border-0">
-                      <td className="py-4 font-medium">{expense.title}</td>
-                      <td className="py-4 text-gray-500">{expense.category}</td>
-                      <td className="py-4 text-gray-500">{expense.date}</td>
+                  {visibleExpenses.map((expense) => (
+                    <tr
+                      key={expense.id}
+                      className="border-b border-gray-50 last:border-0"
+                    >
+                      <td className="py-4 font-medium">
+                        {expense.title}
+                      </td>
+                      <td className="py-4 text-gray-500">
+                        {expense.category}
+                      </td>
+                      <td className="py-4 text-gray-500">
+                        {expense.date}
+                      </td>
                       <td className="py-4 text-right font-semibold">
                         {money(expense.amount)}
                       </td>
@@ -511,7 +818,7 @@ function Metric({
   label: string
   value: string
   note: string
-  icon: React.ReactNode
+  icon: ReactNode
   highlight?: boolean
 }) {
   return (
@@ -523,15 +830,28 @@ function Metric({
       }`}
     >
       <div className="mb-5 flex items-center justify-between gap-2">
-        <p className={`text-sm ${highlight ? 'text-white/75' : 'text-gray-500'}`}>
+        <p
+          className={`text-sm ${
+            highlight ? 'text-white/75' : 'text-gray-500'
+          }`}
+        >
           {label}
         </p>
-        <span className={highlight ? 'text-[#b9dfc5]' : 'text-[#247653]'}>
+        <span
+          className={
+            highlight ? 'text-[#b9dfc5]' : 'text-[#247653]'
+          }
+        >
           {icon}
         </span>
       </div>
+
       <p className="text-2xl font-bold tracking-tight">{value}</p>
-      <p className={`mt-2 text-xs ${highlight ? 'text-white/70' : 'text-gray-400'}`}>
+      <p
+        className={`mt-2 text-xs ${
+          highlight ? 'text-white/70' : 'text-gray-400'
+        }`}
+      >
         {note}
       </p>
     </div>
